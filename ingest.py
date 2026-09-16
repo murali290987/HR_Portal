@@ -69,7 +69,7 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list:
     return chunks
 
 
-def build_chunks(docs_dir: Path) -> list:
+def build_chunks(docs_dir: Path, chunk_size: int = None, overlap: int = None) -> list:
     """
     Load every doc, chunk it, and attach metadata to each chunk.
 
@@ -77,7 +77,14 @@ def build_chunks(docs_dir: Path) -> list:
     and employee_id travel with the chunk text all the way through
     embedding and retrieval, so query.py can filter chunks by who's asking
     without ever re-reading or re-parsing the source files.
+
+    chunk_size/overlap default to config.py's values -- pass them
+    explicitly (e.g. from evals/sweep.py) to try different chunking
+    settings without mutating the shared config module.
     """
+    chunk_size = chunk_size if chunk_size is not None else config.CHUNK_SIZE
+    overlap = overlap if overlap is not None else config.CHUNK_OVERLAP
+
     documents = load_documents(docs_dir)
     all_chunks = []
 
@@ -87,7 +94,7 @@ def build_chunks(docs_dir: Path) -> list:
         employee_id = config.PERSONAL_DOCS.get(filename)  # None for general docs
         doc_type = "personal" if employee_id else "general"
 
-        pieces = chunk_text(text, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
+        pieces = chunk_text(text, chunk_size, overlap)
 
         for i, piece in enumerate(pieces):
             all_chunks.append(
@@ -154,7 +161,7 @@ def build_faiss_index(embeddings: np.ndarray) -> faiss.Index:
     return index
 
 
-def save_index_and_metadata(index: faiss.Index, chunks: list) -> None:
+def save_index_and_metadata(index: faiss.Index, chunks: list, index_path=None, metadata_path=None) -> None:
     """
     Persist two files to disk, and critically, keep them in sync:
 
@@ -173,10 +180,17 @@ def save_index_and_metadata(index: faiss.Index, chunks: list) -> None:
     its source_file/doc_type/employee_id. They must always be rebuilt
     together and stay the same length/order, which is exactly what
     running this whole script top-to-bottom guarantees.
-    """
-    faiss.write_index(index, str(config.FAISS_INDEX_PATH))
 
-    with open(config.METADATA_PATH, "w", encoding="utf-8") as f:
+    index_path/metadata_path default to config.py's paths -- pass them
+    explicitly (e.g. from evals/sweep.py, pointed at a temp directory)
+    to build a throwaway index without touching your real one.
+    """
+    index_path = index_path if index_path is not None else config.FAISS_INDEX_PATH
+    metadata_path = metadata_path if metadata_path is not None else config.METADATA_PATH
+
+    faiss.write_index(index, str(index_path))
+
+    with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(chunks, f, indent=2, ensure_ascii=False)
 
 

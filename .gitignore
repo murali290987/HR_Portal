@@ -1,7 +1,11 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 .env
 # Built artifacts from ingest.py — regenerate with `python ingest.py`
 faiss_index.bin
 chunks_metadata.json
+
+# Eval run outputs — regenerate with evals/run_retrieval_eval.py etc.
+evals/results/

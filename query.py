@@ -22,16 +22,23 @@ from sentence_transformers import SentenceTransformer
 import config
 
 
-def load_index_and_metadata():
+def load_index_and_metadata(index_path=None, metadata_path=None):
     """
     Load the FAISS index and its paired metadata list that ingest.py
     built. These two files only make sense together: FAISS only knows
     "vector at position i is the closest match" — the metadata list is
     what turns position i back into actual chunk text, source_file,
     doc_type, and employee_id.
+
+    index_path/metadata_path default to config.py's paths -- pass them
+    explicitly (e.g. from evals/sweep.py) to load a throwaway index
+    built from a temp directory instead of the real one.
     """
-    index = faiss.read_index(str(config.FAISS_INDEX_PATH))
-    with open(config.METADATA_PATH, "r", encoding="utf-8") as f:
+    index_path = index_path if index_path is not None else config.FAISS_INDEX_PATH
+    metadata_path = metadata_path if metadata_path is not None else config.METADATA_PATH
+
+    index = faiss.read_index(str(index_path))
+    with open(metadata_path, "r", encoding="utf-8") as f:
         metadata = json.load(f)
     return index, metadata
 

@@ -2,9 +2,11 @@
 
 This document traces each piece of the pipeline to the exact code that
 implements it: chunking, embedding, FAISS storage and search, where the
-LLM is actually called, and the three distinct security layers
+LLM is actually called, the three distinct security layers
 (authentication, authorization, and a relevance guardrail) that are
-often confused with each other but do genuinely different jobs here.
+often confused with each other but do genuinely different jobs here,
+and the eval harness (`evals/`) that measures all of the above against
+a golden dataset instead of trusting eyeballed examples.
 
 ## 1. Chunking — where and how
 
@@ -34,8 +36,8 @@ way through embedding and retrieval.
 
 ## 2. Embedding — where and how
 
-**Where:** `ingest.py`, `embed_chunks()` (line 108) at ingest time;
-`query.py`'s `retrieve()` (line 39, first line of the function body) at
+**Where:** `ingest.py`, `embed_chunks()` (line 115) at ingest time;
+`query.py`'s `retrieve()` (line 46, first line of the function body) at
 query time — **the same model is used in both places**, which is
 required: embedding the query with a different model would land it in
 a differently-shaped vector space, making distance comparisons
@@ -58,8 +60,8 @@ query time it runs once over the single incoming question.
 
 ## 3. Storing embeddings into FAISS
 
-**Where:** `ingest.py`, `build_faiss_index()` (line 135) and
-`save_index_and_metadata()` (line 157).
+**Where:** `ingest.py`, `build_faiss_index()` (line 142) and
+`save_index_and_metadata()` (line 164).
 
 **How:** `build_faiss_index()` creates a flat, uncompressed index —
 `faiss.IndexFlatL2(384)` — and adds every chunk's 384-dim vector to it
@@ -87,7 +89,7 @@ Euclidean (L2) distance from the query vector to **every** stored
 vector, then returns the *k* closest — brute force, but entirely fine
 at 34 vectors.
 
-In `retrieve()` (`query.py`, line 39), the search deliberately asks for
+In `retrieve()` (`query.py`, line 46), the search deliberately asks for
 **all** chunks ranked (`index.search(query_vector, index.ntotal)`), not
 just the top `k`:
 
@@ -104,13 +106,13 @@ have been returned instead.
 
 ## 5. Where the LLM is actually called
 
-**Where:** `query.py` — `call_anthropic()` (line 175), `call_ollama()`
-(line 199), and the dispatcher `generate_answer()` (line 211) that
+**Where:** `query.py` — `call_anthropic()` (line 182), `call_ollama()`
+(line 206), and the dispatcher `generate_answer()` (line 218) that
 picks between them based on `config.LLM_PROVIDER` (or a per-request
 override from `server.py`).
 
 **Call sites:**
-- CLI: `query.py`'s `main()` (line 228).
+- CLI: `query.py`'s `main()` (line 235).
 - Web UI: `server.py`'s `run_query()` (line 99), the `POST /api/query`
   handler.
 
@@ -121,7 +123,7 @@ already passed both the access-control filter and the relevance
 guardrail — it never receives, and therefore can never leak, a chunk
 that was filtered out upstream.
 
-`build_prompt()` (`query.py`, line 143) is what makes the generation
+`build_prompt()` (`query.py`, line 150) is what makes the generation
 *retrieval-augmented* rather than the model just answering from its own
 training: it pastes the surviving chunk text into the prompt and
 explicitly instructs the model to answer only from that context and say
@@ -143,7 +145,7 @@ JWT) and only then trust the identity it names.
 ### Authorization (AuthZ) — what that identity can access
 
 **Implemented**, in two layers, both in `retrieve()` (`query.py`, line
-39):
+46):
 
 1. **Ownership-based access control** — a chunk tagged `"personal"` is
    excluded unless `chunk["employee_id"] == current_user_id`. This is
@@ -178,7 +180,7 @@ chunk*; the guardrail decides *whether a chunk the requester is
 otherwise allowed to see is actually relevant to what they asked*. A
 chunk can pass authorization and still be the wrong answer.
 
-**Where:** `query.py`, `apply_relevance_guardrail()` (line 105), called
+**Where:** `query.py`, `apply_relevance_guardrail()` (line 112), called
 from both `main()` and `server.py`'s `run_query()` right after
 `retrieve()` and before `build_prompt()`/`generate_answer()`.
 
@@ -208,13 +210,61 @@ threshold could separate them without either missing real bugs or
 blocking real answers, so the guardrail is intentionally narrow (an
 exact employee-ID mismatch) rather than a blanket similarity cutoff.
 
+## 8. The eval harness — how all of the above is actually verified
+
+Everything in §1–§7 is measured by `evals/`, against a 20-case golden
+dataset grounded in `hr_docs/`'s real content (`evals/dataset.py`,
+`CASES`, line 63) — not by re-reading this document and trusting it.
+
+**The harness reuses the real pipeline; it does not reimplement it.**
+`evals/run_retrieval_eval.py`'s `run_case()` (line 100) calls the exact
+`query.retrieve()` and `query.apply_relevance_guardrail()` from §4/§7,
+and `evals/run_answer_eval.py`'s `run_case()` (line 104) additionally
+calls the real `query.build_prompt()` and `query.generate_answer()`
+from §5. If those functions change, the eval results change with them —
+there's no separate "eval version" of the logic to drift out of sync.
+
+**Two speeds, by design:**
+- `run_retrieval_eval.py` and `sweep.py` never call an LLM — only
+  §1–§4 and the access-control/guardrail parts of §6/§7 are exercised,
+  so they're fast enough to run after every `config.py` change.
+  `sweep.py`'s `build_temp_index()` (line 56) re-runs §1–§3 (chunking →
+  embedding → `IndexFlatL2`) into a `tempfile.TemporaryDirectory()` for
+  every `(CHUNK_SIZE, CHUNK_OVERLAP)` combination — `ingest.py`'s
+  `build_chunks()`, `save_index_and_metadata()`, and `query.py`'s
+  `load_index_and_metadata()` all take optional path/size overrides
+  specifically so this works without ever touching the real
+  `faiss_index.bin`.
+- `run_answer_eval.py` calls §5's `generate_answer()` for real, so it's
+  slow, costs real inference, and is run on demand rather than routinely.
+
+**What it found that this document alone wouldn't have surfaced:**
+- A genuine retrieval gap: the chunk containing the appraisal letter's
+  revised-CTC figure never made the top-3 results for a direct question
+  about it — §1's fixed-size chunking split that document such that its
+  header chunk outscored the chunk with the actual number.
+- A genuine generation error: asked about "Senior Manager" per-diem, the
+  model in §5 answered with the "Senior Associate/Manager" row's value
+  instead — a real mix-up between two similarly-named table rows, not a
+  retrieval or access-control problem.
+- A real interaction between §4 and §7: raising `TOP_K` can let a stray
+  general chunk survive alongside the guardrail's filtering, so
+  `guardrail_triggered` reads `False` even though no personal data
+  leaked — the deterministic block in §7 becomes less reliable at
+  higher `TOP_K`, falling back to the LLM's own judgment instead.
+- The `known_limitation_name_bypass` case keeps the §7 gap (guardrail
+  only matches `EMP\d+`, not names) measured on every run via
+  `evals/test_regressions.py`'s pytest gate (`MIN_HIT_RATE`, line 43) —
+  present, tracked, and explicitly excluded from the pass/fail gate
+  rather than silently patched or silently regressing further.
+
 ## Summary: three layers, three different questions
 
-| Layer | Question it answers | Implemented? |
-|---|---|---|
-| Authentication | Is this really who they claim to be? | No — simulated only |
-| Authorization (ownership + RBAC) | Is this identity allowed to see this chunk? | Yes |
-| Relevance guardrail | Is this chunk actually about what was asked? | Yes (narrow, targeted) |
+| Layer | Question it answers | Implemented? | Covered by `evals/`? |
+|---|---|---|---|
+| Authentication | Is this really who they claim to be? | No — simulated only | N/A — nothing to measure |
+| Authorization (ownership + RBAC) | Is this identity allowed to see this chunk? | Yes | Yes — leak count, every run |
+| Relevance guardrail | Is this chunk actually about what was asked? | Yes (narrow, targeted) | Yes — `expect_guardrail` + the tracked `known_limitation` gap |
 
 All three are independent — a chunk can pass one and fail another (as
 the original bug demonstrated: authorization said yes, relevance should

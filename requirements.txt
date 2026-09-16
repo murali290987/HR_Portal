@@ -6,3 +6,4 @@ anthropic
 ollama
 fastapi
 uvicorn
+pytest

@@ -64,7 +64,7 @@ class RetrievedChunk(BaseModel):
     employee_id: Optional[str]
     distance: float
     text: str
-    relevant: bool  # False = failed the distance-threshold guardrail, not used in the prompt
+    relevant: bool  # False = dropped by the employee-ID relevance guardrail, not used in the prompt
 
 
 class QueryResponse(BaseModel):
