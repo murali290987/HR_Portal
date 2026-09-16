@@ -22,11 +22,11 @@ flowchart TD
     EMB["Embed query<br/>(all-MiniLM-L6-v2 — same model as ingestion)"]
     FAISS["FAISS: rank ALL chunks by L2 distance<br/>(IndexFlatL2, query.retrieve)"]
     PERSONAL{"chunk.doc_type == personal?"}
-    OWNER{"chunk.employee_id == user_id<br/>OR role == hr?"}
+    OWNER{"ACCESS CONTROL:<br/>chunk.employee_id == user_id<br/>OR role == hr?"}
     DROP_AC["Drop chunk<br/>(access control)"]
     KEEP1["Chunk survives"]
     TOPK["Stop once TOP_K chunks<br/>have survived"]
-    NAMED{"Chunk is personal AND question names<br/>a different EMP id than this chunk's owner?"}
+    NAMED{"RELEVANCE GUARDRAIL:<br/>chunk is personal AND question names<br/>a different EMP id than this chunk's owner?"}
     DROP_GR["Drop chunk<br/>(relevance guardrail)"]
     KEEP2["Chunk survives"]
     ANY{"Any chunks survived?"}
