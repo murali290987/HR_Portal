@@ -130,12 +130,14 @@ eyeballing a handful of queries. Full details, including how to read
 every metric and two documented weaknesses in the answer-quality
 checks, are in **[`evals/README.md`](evals/README.md)**. Summary:
 
-- **`dataset.py`** — 20 hand-built cases across 7 categories, grounded
-  in `hr_docs/`'s actual content. One case is deliberately marked
-  `known_limitation: True` — a real, currently-unfixed gap (the
-  relevance guardrail's `EMP\d+` regex doesn't catch a *name* used
-  instead of an employee ID) — measured on every run, not silently
-  patched away.
+- **`dataset.py`** — 21 hand-built cases across 7 categories, grounded
+  in `hr_docs/`'s actual content. Two cases are deliberately marked
+  `known_limitation: True` — both stem from the same root gap (the
+  relevance guardrail's `EMP\d+` regex only catches an explicit
+  employee ID, never a name or a bare pronoun), reached via two
+  different paths: an owner naming a different person by name, and the
+  `hr` role's blanket bypass answering a vague "my ..." question with
+  someone else's data. Measured on every run, not silently patched away.
 - **`run_retrieval_eval.py`** — fast, no LLM calls: hit@k, precision@k,
   recall, leak count, guardrail accuracy against the real
   `query.retrieve()`/`apply_relevance_guardrail()`.
@@ -172,11 +174,17 @@ This is a learning project, not a production system:
   mismatch guardrail is deterministic; the general "nothing here
   answers this" case still depends on the LLM's own judgment.
 - **The relevance guardrail only catches an explicit `EMP\d+` pattern,
-  not a name.** If a question implies a different identity by name
-  instead of ID (e.g. asking about someone who doesn't exist in the
-  corpus by name), a requester's own real personal data can still be
-  retrieved and risks being misattributed by the LLM. Measured and
-  intentionally left unfixed as a tracked case in `evals/dataset.py`
-  (`known_limitation_name_bypass`) rather than patched silently.
+  not a name or a bare pronoun.** Two tracked, reproducible ways this
+  shows up (both in `evals/dataset.py`, both intentionally left unfixed
+  rather than patched silently):
+  - `known_limitation_name_bypass` — a requester asks about a different
+    identity by *name* instead of ID; their own real personal data gets
+    retrieved and risks misattribution by the LLM.
+  - `known_limitation_hr_first_person_bypass` — the `hr` role's
+    ownership bypass plus a vague first-person question ("what is my
+    name?") with no name or ID at all; the closest personal chunk in
+    the whole corpus gets returned and answered as if it were the
+    requester's own. Confirmed live: HR001 asking "what is my name"
+    got back "Priya Ramanathan."
 - **Small local models can misphrase or over-hedge**, even when
   retrieval and access control are working correctly.

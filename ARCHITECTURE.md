@@ -212,7 +212,7 @@ exact employee-ID mismatch) rather than a blanket similarity cutoff.
 
 ## 8. The eval harness — how all of the above is actually verified
 
-Everything in §1–§7 is measured by `evals/`, against a 20-case golden
+Everything in §1–§7 is measured by `evals/`, against a 21-case golden
 dataset grounded in `hr_docs/`'s real content (`evals/dataset.py`,
 `CASES`, line 63) — not by re-reading this document and trusting it.
 
@@ -252,9 +252,14 @@ there's no separate "eval version" of the logic to drift out of sync.
   `guardrail_triggered` reads `False` even though no personal data
   leaked — the deterministic block in §7 becomes less reliable at
   higher `TOP_K`, falling back to the LLM's own judgment instead.
-- The `known_limitation_name_bypass` case keeps the §7 gap (guardrail
-  only matches `EMP\d+`, not names) measured on every run via
-  `evals/test_regressions.py`'s pytest gate (`MIN_HIT_RATE`, line 43) —
+- Two `known_limitation` cases keep the same §7 gap (guardrail only
+  matches `EMP\d+` — never a name, never a bare pronoun) measured on
+  every run via `evals/test_regressions.py`'s pytest gate
+  (`MIN_HIT_RATE`, line 43), reached via two different paths:
+  `known_limitation_name_bypass` (an owner asking about a different
+  person *by name*) and `known_limitation_hr_first_person_bypass` (the
+  §6 RBAC bypass plus a vague "what is my name?" with no name or ID at
+  all — confirmed live: HR001 got back "Priya Ramanathan"). Both stay
   present, tracked, and explicitly excluded from the pass/fail gate
   rather than silently patched or silently regressing further.
 
@@ -264,7 +269,7 @@ there's no separate "eval version" of the logic to drift out of sync.
 |---|---|---|---|
 | Authentication | Is this really who they claim to be? | No — simulated only | N/A — nothing to measure |
 | Authorization (ownership + RBAC) | Is this identity allowed to see this chunk? | Yes | Yes — leak count, every run |
-| Relevance guardrail | Is this chunk actually about what was asked? | Yes (narrow, targeted) | Yes — `expect_guardrail` + the tracked `known_limitation` gap |
+| Relevance guardrail | Is this chunk actually about what was asked? | Yes (narrow, targeted) | Yes — `expect_guardrail` + 2 tracked `known_limitation` cases |
 
 All three are independent — a chunk can pass one and fail another (as
 the original bug demonstrated: authorization said yes, relevance should

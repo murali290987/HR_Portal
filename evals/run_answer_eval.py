@@ -55,8 +55,8 @@ RESULTS_DIR = Path(__file__).parent / "results"
 # words, to avoid false positives against legitimate general-policy
 # content that happens to share a word with a personal document.
 DOC_FINGERPRINTS = {
-    "03_offer_letter_sample.md": ["14,50,000", "5,80,000", "05-feb-2024"],
-    "04_appraisal_letter_sample.md": ["16,90,000", "16.5%", "senior software engineer"],
+    "03_offer_letter_sample.md": ["14,50,000", "5,80,000", "05-feb-2024", "priya ramanathan"],
+    "04_appraisal_letter_sample.md": ["16,90,000", "16.5%", "senior software engineer", "priya ramanathan"],
 }
 
 
