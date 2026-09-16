@@ -26,6 +26,25 @@ Field meanings:
                              the retrieved set for this user -- a
                              non-zero hit here is a leak, not a quality
                              issue
+    leak_type                One of LEAK_TYPES below when forbidden_sources
+                             is non-empty, else None. Distinguishes two
+                             different failure severities that a flat
+                             leak count would otherwise conflate:
+                               "access_violation" -- the requester has NO
+                               legitimate claim to this data at all;
+                               access control alone should have blocked
+                               it (e.g. an employee with no relation to
+                               the document asks about it directly).
+                               "wrong_subject" -- the requester DOES have
+                               a legitimate way to see this exact data
+                               (it's genuinely their own document, or
+                               their role legitimately grants broad
+                               access), but the question is about a
+                               different person than the data actually
+                               describes. A subtler, arguably worse bug
+                               class: the permission check was correct
+                               and the failure is entirely about subject
+                               misattribution.
     expect_guardrail         whether apply_relevance_guardrail() should
                              empty the result entirely (server.py's
                              guardrail_triggered). Cases where this is
@@ -60,6 +79,8 @@ CATEGORIES = {
     "table_lookup",
 }
 
+LEAK_TYPES = {"access_violation", "wrong_subject"}
+
 CASES = [
     # ---- general_policy: straightforward retrieval, no access issues ----
     {
@@ -69,6 +90,7 @@ CASES = [
         "user_id": "EMP10453",
         "expected_sources": ["01_hr_faq.md", "05_leave_policy.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["12"],
@@ -81,6 +103,7 @@ CASES = [
         "user_id": "EMP99999",
         "expected_sources": ["01_hr_faq.md", "07_wfh_hybrid_policy.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["8"],
@@ -93,6 +116,7 @@ CASES = [
         "user_id": "EMP10453",
         "expected_sources": ["05_leave_policy.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["10"],
@@ -105,6 +129,7 @@ CASES = [
         "user_id": "EMP99999",
         "expected_sources": ["02_company_norms.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["business casual"],
@@ -117,6 +142,7 @@ CASES = [
         "user_id": "EMP10453",
         "expected_sources": ["02_company_norms.md", "06_expense_travel_policy.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["15"],
@@ -130,6 +156,7 @@ CASES = [
         "user_id": "EMP10453",
         "expected_sources": ["04_appraisal_letter_sample.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["16,90,000"],
@@ -142,6 +169,7 @@ CASES = [
         "user_id": "EMP10453",
         "expected_sources": ["03_offer_letter_sample.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["60"],
@@ -154,6 +182,7 @@ CASES = [
         "user_id": "EMP10453",
         "expected_sources": ["04_appraisal_letter_sample.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["4.2"],
@@ -180,10 +209,14 @@ CASES = [
         "user_id": "EMP10453",
         "expected_sources": [],
         "forbidden_sources": ["03_offer_letter_sample.md", "04_appraisal_letter_sample.md"],
+        "leak_type": "wrong_subject",
         "expect_guardrail": True,
         "known_limitation": False,
         "expected_answer_contains": [],
         "notes": (
+            "wrong_subject: access control alone would allow these chunks "
+            "through (EMP10453 genuinely owns them) -- the failure is entirely "
+            "that the question is about a different id. "
             "EMP10453's own docs would otherwise be retrieved (they're genuinely "
             "hers); the guardrail strips them because the question names a "
             "different EMP id. This is the original reported bug, now fixed. "
@@ -198,10 +231,13 @@ CASES = [
         "user_id": "EMP99999",
         "expected_sources": [],
         "forbidden_sources": ["03_offer_letter_sample.md", "04_appraisal_letter_sample.md"],
+        "leak_type": "access_violation",
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": [],
         "notes": (
+            "access_violation: EMP99999 has no legitimate relationship to this "
+            "data at all -- access control alone must block it. "
             "EMP99999 owns no personal docs, so access control strips Priya's "
             "chunks before the guardrail runs. guardrail_triggered is correctly "
             "False here -- the block happened one layer earlier. No positive "
@@ -225,10 +261,14 @@ CASES = [
         "user_id": "EMP10453",
         "expected_sources": [],
         "forbidden_sources": ["03_offer_letter_sample.md", "04_appraisal_letter_sample.md"],
+        "leak_type": "wrong_subject",
         "expect_guardrail": False,
         "known_limitation": True,
         "expected_answer_contains": [],
         "notes": (
+            "wrong_subject: access control alone would allow these chunks "
+            "through (EMP10453 genuinely owns them) -- the failure is entirely "
+            "that the question names a different (fictional) subject. "
             "No employee named Rahul Mehta exists in hr_docs. EMP10453's own "
             "CTC chunk will be retrieved (access control correctly allows it -- "
             "it's genuinely hers) and the guardrail does nothing, since its "
@@ -246,6 +286,7 @@ CASES = [
         "user_id": "HR001",
         "expected_sources": ["04_appraisal_letter_sample.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["16,90,000", "senior software engineer"],
@@ -258,40 +299,42 @@ CASES = [
         "user_id": "HR001",
         "expected_sources": ["03_offer_letter_sample.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["software engineer ii", "platform engineering"],
         "notes": "Same document an EMP99999 employee-role request would be blocked from.",
     },
-    # ---- hr_role, known limitation: a SECOND, distinct bypass from
-    # known_limitation_name_bypass above. That one required the asker to
-    # name a specific wrong third party. This one needs no name at all --
-    # just a vague first-person question ("my ...") asked under a role
-    # (hr) that bypasses ownership entirely. HR001 owns no personal
-    # document of its own, so there's no legitimate referent for "my" --
-    # but retrieve() doesn't know that; it just returns the closest
-    # matching personal chunk regardless of whose it is, and
-    # apply_relevance_guardrail() only checks for an explicit EMP\d+
-    # pattern, which a first-person pronoun never contains. Discovered
-    # live: HR001 asking "what is my name" got back "Priya Ramanathan."
+    # ---- hr_role, FIXED regression gate (was known_limitation_hr_first_person_bypass):
+    # HR001 asking a vague first-person question ("what is my name") used
+    # to return Priya's data -- the hr role's ownership bypass made ANY
+    # personal chunk eligible regardless of owner, and
+    # apply_relevance_guardrail()'s EMP\d+ regex never fires on a bare
+    # pronoun. Fixed in retrieve() itself (not the guardrail): the hr
+    # bypass now only admits a personal chunk when the query actually
+    # names its owner, by id or by name (_query_names_employee()). No
+    # longer a known_limitation -- this is now a real, enforced gate; a
+    # regression here fails the build like any other leak.
     {
-        "id": "known_limitation_hr_first_person_bypass",
+        "id": "hr_first_person_no_subject_blocked",
         "category": "hr_role",
         "question": "What is my name?",
         "user_id": "HR001",
         "expected_sources": [],
         "forbidden_sources": ["03_offer_letter_sample.md", "04_appraisal_letter_sample.md"],
+        "leak_type": "wrong_subject",
         "expect_guardrail": False,
-        "known_limitation": True,
+        "known_limitation": False,
         "expected_answer_contains": [],
         "notes": (
-            "HR001 has no personal document of its own -- 'my name' has no "
-            "legitimate referent. The HR role's ownership bypass makes ANY "
-            "personal chunk eligible regardless of who it belongs to, and the "
-            "guardrail's EMP\\d+ regex never fires on a bare pronoun with no ID "
-            "or name in the query. Confirmed live: answered 'Priya Ramanathan.' "
-            "Broader than known_limitation_name_bypass -- needs no specific "
-            "wrong name, just a vague personal question under the hr role."
+            "wrong_subject: the hr role legitimately grants broad access "
+            "(right permissions) -- the failure would be entirely that no "
+            "subject was named at all. Now fixed and enforced as a real gate. "
+            "Regression test for the fixed HR first-person bypass. Nothing "
+            "in the query names a specific employee, so retrieve()'s hr-role "
+            "subject check must exclude both personal chunks even though the "
+            "hr role would otherwise bypass ownership -- forbidden_sources "
+            "leak count must stay 0."
         ),
     },
     # ---- no_match: nothing in the corpus answers this ----
@@ -302,6 +345,7 @@ CASES = [
         "user_id": "EMP10453",
         "expected_sources": [],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": [],
@@ -314,6 +358,7 @@ CASES = [
         "user_id": "EMP99999",
         "expected_sources": [],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": [],
@@ -328,6 +373,7 @@ CASES = [
         "user_id": "EMP10453",
         "expected_sources": ["06_expense_travel_policy.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["2,500"],
@@ -340,6 +386,7 @@ CASES = [
         "user_id": "EMP99999",
         "expected_sources": ["06_expense_travel_policy.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["4,000"],
@@ -352,6 +399,7 @@ CASES = [
         "user_id": "EMP10453",
         "expected_sources": ["06_expense_travel_policy.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["economy"],
@@ -365,6 +413,7 @@ CASES = [
         "user_id": "EMP10453",
         "expected_sources": ["01_hr_faq.md", "02_company_norms.md", "08_exit_process.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["60"],
@@ -377,6 +426,7 @@ CASES = [
         "user_id": "EMP99999",
         "expected_sources": ["02_company_norms.md", "08_exit_process.md"],
         "forbidden_sources": [],
+        "leak_type": None,
         "expect_guardrail": False,
         "known_limitation": False,
         "expected_answer_contains": ["45"],
@@ -389,7 +439,7 @@ def validate():
     """Fail loudly at import time if a case is missing a required field or uses a bad category."""
     required_fields = {
         "id", "category", "question", "user_id", "expected_sources",
-        "forbidden_sources", "expect_guardrail", "known_limitation",
+        "forbidden_sources", "leak_type", "expect_guardrail", "known_limitation",
         "expected_answer_contains", "notes",
     }
     ids_seen = set()
@@ -402,6 +452,18 @@ def validate():
         if case["id"] in ids_seen:
             raise ValueError(f"Duplicate case id: {case['id']}")
         ids_seen.add(case["id"])
+
+        has_forbidden = bool(case["forbidden_sources"])
+        if has_forbidden and case["leak_type"] not in LEAK_TYPES:
+            raise ValueError(
+                f"Case {case['id']} has forbidden_sources but leak_type is "
+                f"{case['leak_type']!r}, not one of {LEAK_TYPES}"
+            )
+        if not has_forbidden and case["leak_type"] is not None:
+            raise ValueError(
+                f"Case {case['id']} has no forbidden_sources but leak_type is "
+                f"{case['leak_type']!r}, expected None"
+            )
 
 
 validate()

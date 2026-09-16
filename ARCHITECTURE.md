@@ -22,8 +22,11 @@ flowchart TD
     EMB["Embed query<br/>(all-MiniLM-L6-v2 — same model as ingestion)"]
     FAISS["FAISS: rank ALL chunks by L2 distance<br/>(IndexFlatL2, query.retrieve)"]
     PERSONAL{"chunk.doc_type == personal?"}
-    OWNER{"ACCESS CONTROL:<br/>chunk.employee_id == user_id<br/>OR role == hr?"}
+    OWNS{"ACCESS CONTROL:<br/>chunk.employee_id == user_id?"}
+    ISHR{"RBAC:<br/>role == hr?"}
+    NAMES_SUBJECT{"HR SUBJECT CHECK:<br/>question names this chunk's<br/>owner, by id or by name?"}
     DROP_AC["Drop chunk<br/>(access control)"]
+    DROP_HR["Drop chunk<br/>(hr bypass needs a named subject)"]
     KEEP1["Chunk survives"]
     TOPK["Stop once TOP_K chunks<br/>have survived"]
     NAMED{"RELEVANCE GUARDRAIL:<br/>chunk is personal AND question names<br/>a different EMP id than this chunk's owner?"}
@@ -37,9 +40,13 @@ flowchart TD
 
     Q --> EMB --> FAISS --> PERSONAL
     PERSONAL -->|no, general| KEEP1
-    PERSONAL -->|yes, personal| OWNER
-    OWNER -->|yes| KEEP1
-    OWNER -->|no| DROP_AC
+    PERSONAL -->|yes, personal| OWNS
+    OWNS -->|yes, genuinely theirs| KEEP1
+    OWNS -->|no| ISHR
+    ISHR -->|no| DROP_AC
+    ISHR -->|yes| NAMES_SUBJECT
+    NAMES_SUBJECT -->|yes| KEEP1
+    NAMES_SUBJECT -->|no| DROP_HR
     KEEP1 --> TOPK
     TOPK --> NAMED
     NAMED -->|yes| DROP_GR
@@ -50,15 +57,23 @@ flowchart TD
     ANY -->|yes| PROMPT --> LLM --> ANSWER
 ```
 
-Note what the guardrail diamond does *not* cover: a bare pronoun like
-"my" with no named identity at all never makes the `NAMED` check fire —
-that's precisely the `known_limitation_hr_first_person_bypass` gap in
-§7/§8, not a missing box in this diagram.
+The `NAMES_SUBJECT` diamond is what fixed the HR first-person bypass:
+`HR001` asking a bare "what is my name?" now gets dropped there (no id,
+no name in the query), instead of falling through to whichever
+personal chunk happened to be closest. Note what's still *not* covered
+anywhere in this diagram: the `OWNS` diamond's "yes" branch — a chunk
+that's genuinely the requester's own — always survives unconditionally,
+regardless of who the question names. If the requester asks about a
+*different* name than their own (not an id — the `RELEVANCE GUARDRAIL`
+diamond only matches `EMP\d+`), their own real data can still surface
+under someone else's name. That's the remaining
+`known_limitation_name_bypass` gap in §7/§8 — a real, tracked, and
+currently unfixed hole, not a missing box.
 
 ## 1. Chunking — where and how
 
 **Where:** `ingest.py`, `chunk_text()` (line 35) and `build_chunks()`
-(line 72). Runs once, offline, when you execute `python ingest.py` —
+(line 87). Runs once, offline, when you execute `python ingest.py` —
 never at query time.
 
 **How:** each `.md` file in `hr_docs/` is loaded whole (`load_documents()`,
@@ -83,8 +98,8 @@ way through embedding and retrieval.
 
 ## 2. Embedding — where and how
 
-**Where:** `ingest.py`, `embed_chunks()` (line 115) at ingest time;
-`query.py`'s `retrieve()` (line 46, first line of the function body) at
+**Where:** `ingest.py`, `embed_chunks()` (line 130) at ingest time;
+`query.py`'s `retrieve()` (line 61, first line of the function body) at
 query time — **the same model is used in both places**, which is
 required: embedding the query with a different model would land it in
 a differently-shaped vector space, making distance comparisons
@@ -107,8 +122,8 @@ query time it runs once over the single incoming question.
 
 ## 3. Storing embeddings into FAISS
 
-**Where:** `ingest.py`, `build_faiss_index()` (line 142) and
-`save_index_and_metadata()` (line 164).
+**Where:** `ingest.py`, `build_faiss_index()` (line 157) and
+`save_index_and_metadata()` (line 179).
 
 **How:** `build_faiss_index()` creates a flat, uncompressed index —
 `faiss.IndexFlatL2(384)` — and adds every chunk's 384-dim vector to it
@@ -136,7 +151,7 @@ Euclidean (L2) distance from the query vector to **every** stored
 vector, then returns the *k* closest — brute force, but entirely fine
 at 34 vectors.
 
-In `retrieve()` (`query.py`, line 46), the search deliberately asks for
+In `retrieve()` (`query.py`, line 61), the search deliberately asks for
 **all** chunks ranked (`index.search(query_vector, index.ntotal)`), not
 just the top `k`:
 
@@ -153,13 +168,13 @@ have been returned instead.
 
 ## 5. Where the LLM is actually called
 
-**Where:** `query.py` — `call_anthropic()` (line 182), `call_ollama()`
-(line 206), and the dispatcher `generate_answer()` (line 218) that
+**Where:** `query.py` — `call_anthropic()` (line 204), `call_ollama()`
+(line 228), and the dispatcher `generate_answer()` (line 240) that
 picks between them based on `config.LLM_PROVIDER` (or a per-request
 override from `server.py`).
 
 **Call sites:**
-- CLI: `query.py`'s `main()` (line 235).
+- CLI: `query.py`'s `main()` (line 257).
 - Web UI: `server.py`'s `run_query()` (line 99), the `POST /api/query`
   handler.
 
@@ -170,7 +185,7 @@ already passed both the access-control filter and the relevance
 guardrail — it never receives, and therefore can never leak, a chunk
 that was filtered out upstream.
 
-`build_prompt()` (`query.py`, line 150) is what makes the generation
+`build_prompt()` (`query.py`, line 172) is what makes the generation
 *retrieval-augmented* rather than the model just answering from its own
 training: it pastes the surviving chunk text into the prompt and
 explicitly instructs the model to answer only from that context and say
@@ -191,24 +206,36 @@ JWT) and only then trust the identity it names.
 
 ### Authorization (AuthZ) — what that identity can access
 
-**Implemented**, in two layers, both in `retrieve()` (`query.py`, line
-46):
+**Implemented**, in three layers, all in `retrieve()` (`query.py`, line
+61):
 
 1. **Ownership-based access control** — a chunk tagged `"personal"` is
    excluded unless `chunk["employee_id"] == current_user_id`. This is
    attribute comparison (is the requester the owner?), not role-based
-   access.
+   access. If it belongs to the requester, it survives unconditionally
+   — nothing later in this section re-examines that decision.
 2. **RBAC (role-based) extension** — `config.USERS` maps each user id to
-   a role (`"employee"` or `"hr"`). An `"employee"` role is still bound
-   by rule 1; an `"hr"` role bypasses it entirely and can see any
-   employee's personal documents:
+   a role (`"employee"` or `"hr"`). An `"employee"` role is fully bound
+   by rule 1; an `"hr"` role gets a *conditional* bypass, checked next.
+3. **HR subject check** (`_query_names_employee()`, query.py line 46)
+   — the hr bypass only admits a chunk belonging to someone else when
+   the query actually names that specific person, by id (`EMP\d+`) or
+   by name (`config.EMPLOYEE_NAMES`). Without this, an `hr`-role request
+   for a vague "what is my name?" would return whichever employee's
+   chunk happened to be closest, mislabeled as the requester's own —
+   a real bug, found live and fixed here, not in the guardrail (§7),
+   because it's about which chunks are *eligible at all*, not about
+   re-filtering chunks that already passed access control:
 
    ```python
-   is_someone_elses_personal_doc = (
-       chunk["doc_type"] == "personal"
-       and chunk["employee_id"] != current_user_id
-       and current_role != "hr"
+   belongs_to_someone_else = (
+       chunk["doc_type"] == "personal" and chunk["employee_id"] != current_user_id
    )
+   if belongs_to_someone_else:
+       if current_role != "hr":
+           continue  # no bypass available -- blocked by ownership
+       if not _query_names_employee(query, chunk["employee_id"]):
+           continue  # hr bypass requires naming whose record this is
    ```
 
 **The one part of this that *is* handled the way a real system would:**
@@ -227,7 +254,7 @@ chunk*; the guardrail decides *whether a chunk the requester is
 otherwise allowed to see is actually relevant to what they asked*. A
 chunk can pass authorization and still be the wrong answer.
 
-**Where:** `query.py`, `apply_relevance_guardrail()` (line 112), called
+**Where:** `query.py`, `apply_relevance_guardrail()` (line 134), called
 from both `main()` and `server.py`'s `run_query()` right after
 `retrieve()` and before `build_prompt()`/`generate_answer()`.
 
@@ -261,7 +288,7 @@ exact employee-ID mismatch) rather than a blanket similarity cutoff.
 
 Everything in §1–§7 is measured by `evals/`, against a 21-case golden
 dataset grounded in `hr_docs/`'s real content (`evals/dataset.py`,
-`CASES`, line 63) — not by re-reading this document and trusting it.
+`CASES`, line 84) — not by re-reading this document and trusting it.
 
 **The harness reuses the real pipeline; it does not reimplement it.**
 `evals/run_retrieval_eval.py`'s `run_case()` (line 100) calls the exact
@@ -285,30 +312,38 @@ there's no separate "eval version" of the logic to drift out of sync.
 - `run_answer_eval.py` calls §5's `generate_answer()` for real, so it's
   slow, costs real inference, and is run on demand rather than routinely.
 
-**What it found that this document alone wouldn't have surfaced:**
-- A genuine retrieval gap: the chunk containing the appraisal letter's
-  revised-CTC figure never made the top-3 results for a direct question
-  about it — §1's fixed-size chunking split that document such that its
-  header chunk outscored the chunk with the actual number.
+**What it found that this document alone wouldn't have surfaced**
+(full writeups in `evals/FINDINGS.md`):
+- A genuine retrieval gap, confirmed and still open: the chunk
+  containing the appraisal letter's revised-CTC figure never makes the
+  top-3 results for a direct question about it — §1's fixed-size
+  chunking split that document such that its header chunk outscores
+  the chunk with the actual number. Invisible to `hit@k` (file-level —
+  the file shows up via the header chunk), only visible via Stage 4's
+  `expected_answer_contains` check. Investigated whether the same
+  cause shreds a different table (`06_expense_travel_policy.md`'s
+  per-diem grid) — it doesn't; that table is fully intact in one chunk.
 - A genuine generation error: asked about "Senior Manager" per-diem, the
   model in §5 answered with the "Senior Associate/Manager" row's value
   instead — a real mix-up between two similarly-named table rows, not a
-  retrieval or access-control problem.
+  retrieval or access-control problem (the table was retrieved intact).
 - A real interaction between §4 and §7: raising `TOP_K` can let a stray
   general chunk survive alongside the guardrail's filtering, so
   `guardrail_triggered` reads `False` even though no personal data
   leaked — the deterministic block in §7 becomes less reliable at
   higher `TOP_K`, falling back to the LLM's own judgment instead.
-- Two `known_limitation` cases keep the same §7 gap (guardrail only
-  matches `EMP\d+` — never a name, never a bare pronoun) measured on
-  every run via `evals/test_regressions.py`'s pytest gate
-  (`MIN_HIT_RATE`, line 43), reached via two different paths:
-  `known_limitation_name_bypass` (an owner asking about a different
-  person *by name*) and `known_limitation_hr_first_person_bypass` (the
-  §6 RBAC bypass plus a vague "what is my name?" with no name or ID at
-  all — confirmed live: HR001 got back "Priya Ramanathan"). Both stay
-  present, tracked, and explicitly excluded from the pass/fail gate
-  rather than silently patched or silently regressing further.
+- One `known_limitation` case, `known_limitation_name_bypass`, keeps
+  the remaining §7 gap (the guardrail's `EMP\d+` regex never matches a
+  name) measured on every run via `evals/test_regressions.py`'s pytest
+  gate (`MIN_HIT_RATE`, line 53) — present, tracked, and explicitly
+  excluded from the pass/fail gate rather than silently patched. A
+  second, related case (the RBAC bypass plus a vague "what is my
+  name?" with no name or ID at all — confirmed live: HR001 got back
+  "Priya Ramanathan") was found the same way and has since been
+  **fixed** in §6's `retrieve()` (a new `NAMES_SUBJECT` check, not the
+  guardrail) and promoted to a real, enforced regression gate.
+- Leaks are now split by severity (`leak_type`: `access_violation` vs.
+  `wrong_subject`) rather than one flat count — see `evals/FINDINGS.md`.
 
 ## Summary: three layers, three different questions
 

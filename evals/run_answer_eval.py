@@ -158,10 +158,19 @@ def print_report(all_results):
     print(f"Fact checks:     {facts_passed}/{len(fact_checked)} passed")
     print(f"No-match checks: {no_match_passed}/{len(no_match_checked)} looked like a refusal")
     if total_leaks:
+        # Same access_violation/wrong_subject split as run_retrieval_eval.py
+        # -- see dataset.py's leak_type field docs.
+        access_violation_leaks = sum(
+            len(r["result"]["content_leaks"]) for r in regular if r["case"]["leak_type"] == "access_violation"
+        )
+        wrong_subject_leaks = sum(
+            len(r["result"]["content_leaks"]) for r in regular if r["case"]["leak_type"] == "wrong_subject"
+        )
         print(f"\n*** {total_leaks} CONTENT-LEVEL LEAK(S) in regular-case answers: ***")
+        print(f"    access_violation: {access_violation_leaks}  |  wrong_subject: {wrong_subject_leaks}")
         for r in regular:
             if r["result"]["content_leaks"]:
-                print(f"    [{r['case']['id']}] leaked: {r['result']['content_leaks']}")
+                print(f"    [{r['case']['id']}] ({r['case']['leak_type']}) leaked: {r['result']['content_leaks']}")
     else:
         print("Content-level leaks: 0")
 
@@ -173,7 +182,7 @@ def print_report(all_results):
             _print_case(r)
             leaks = r["result"]["content_leaks"]
             status = f"still leaking as expected: {leaks}" if leaks else "NOW CLEAN -- update dataset.py"
-            print(f"    -> {status}")
+            print(f"    -> ({r['case']['leak_type']}) {status}")
 
 
 def _print_case(r):

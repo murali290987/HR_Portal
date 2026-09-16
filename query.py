@@ -43,6 +43,21 @@ def load_index_and_metadata(index_path=None, metadata_path=None):
     return index, metadata
 
 
+def _query_names_employee(query_text: str, employee_id: str) -> bool:
+    """
+    Does the query explicitly name this specific employee, by id or by
+    name? Used by retrieve()'s hr-role subject check below -- the hr
+    role's ownership bypass exists so HR can look up a NAMED employee's
+    records, not so any vague personal question ("what is my name?")
+    resolves to whichever employee's document happens to be closest.
+    """
+    mentioned_ids = {m.upper() for m in _EMPLOYEE_ID_RE.findall(query_text)}
+    if employee_id in mentioned_ids:
+        return True
+    name = config.EMPLOYEE_NAMES.get(employee_id)
+    return name is not None and name.lower() in query_text.lower()
+
+
 def retrieve(
     query: str,
     model: SentenceTransformer,
@@ -67,12 +82,18 @@ def retrieve(
     arguments so we can see the *filtering logic* work — no real AuthN
     (proving who you are) is happening; that's a later phase.
 
-    The filter itself: a chunk is excluded if it's tagged "personal",
-    doesn't belong to current_user_id, AND current_role isn't "hr". An
-    "employee" role is restricted to their own documents only (Step 5's
-    original behavior); an "hr" role bypasses the ownership check
-    entirely, matching what a real HR admin would need. General docs
-    are never filtered — they're not employee-specific.
+    The filter: a chunk tagged "personal" belonging to someone other
+    than current_user_id is excluded UNLESS current_role is "hr" --
+    matching what a real HR admin would need. But the hr bypass only
+    applies when the query actually names whose record it wants (by id
+    or by name, via _query_names_employee): an hr request for a vague
+    "my ..." question names no one, so it should not silently resolve
+    to whichever employee's chunk happens to be closest. This was a
+    real bug -- HR001 asking "what is my name" got back "Priya
+    Ramanathan" -- fixed here rather than in apply_relevance_guardrail()
+    because it's about which chunks are ELIGIBLE at all, not about
+    re-filtering chunks that already passed access control. General docs
+    are never filtered by any of this — they're not employee-specific.
 
     Implementation note: we ask FAISS to rank ALL chunks (not just
     top_k), apply the filter to that full ranked list, and only THEN
@@ -89,13 +110,14 @@ def retrieve(
     results = []
     for distance, position in zip(distances[0], positions[0]):
         chunk = metadata[position]
-        is_someone_elses_personal_doc = (
-            chunk["doc_type"] == "personal"
-            and chunk["employee_id"] != current_user_id
-            and current_role != "hr"
+        belongs_to_someone_else = (
+            chunk["doc_type"] == "personal" and chunk["employee_id"] != current_user_id
         )
-        if is_someone_elses_personal_doc:
-            continue
+        if belongs_to_someone_else:
+            if current_role != "hr":
+                continue  # no bypass available -- blocked by ownership
+            if not _query_names_employee(query, chunk["employee_id"]):
+                continue  # hr bypass requires naming whose record this is
         results.append({**chunk, "distance": float(distance)})
         if len(results) == top_k:
             break

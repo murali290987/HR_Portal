@@ -133,11 +133,25 @@ def print_report(all_results):
 
     total_leaks = sum(r["metrics"]["leak_count"] for r in regular)
     if total_leaks:
+        # Split by leak_type rather than reporting one flat count: an
+        # access_violation (requester has no legitimate claim to this
+        # data at all) is a different, more severe bug than a
+        # wrong_subject leak (permissions were correct, the question
+        # was just about the wrong person) -- see dataset.py's field
+        # docs. Different layers, different fixes.
+        access_violation_leaks = sum(
+            r["metrics"]["leak_count"] for r in regular if r["case"]["leak_type"] == "access_violation"
+        )
+        wrong_subject_leaks = sum(
+            r["metrics"]["leak_count"] for r in regular if r["case"]["leak_type"] == "wrong_subject"
+        )
         print(f"\n*** {total_leaks} LEAK(S) DETECTED in non-known-limitation cases. ***")
+        print(f"    access_violation: {access_violation_leaks}  |  wrong_subject: {wrong_subject_leaks}")
         for r in regular:
             if r["metrics"]["leak_count"]:
                 print(
-                    f"    [{r['case']['id']}] leaked sources: {r['metrics']['leaked_sources']}"
+                    f"    [{r['case']['id']}] ({r['case']['leak_type']}) "
+                    f"leaked sources: {r['metrics']['leaked_sources']}"
                 )
     else:
         print("\nNo leaks in regular cases.")
@@ -158,7 +172,7 @@ def print_report(all_results):
         _print_table(known_limitation)
         for r in known_limitation:
             status = "still failing as expected" if r["metrics"]["leak_count"] else "NOW PASSING -- update dataset.py"
-            print(f"    [{r['case']['id']}] {status}")
+            print(f"    [{r['case']['id']}] ({r['case']['leak_type']}) {status}")
 
 
 def _print_table(results):

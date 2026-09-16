@@ -66,6 +66,21 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list:
         if end >= len(text):
             break
         start += step
+
+    # The sliding window's final chunk can end up contributing barely
+    # any NEW text beyond what the previous chunk's tail already
+    # covered -- e.g. with chunk_size=500/overlap=50, one document's
+    # last chunk came out to 59 characters: 50 of them pure repeat of
+    # the previous chunk's end, leaving only 9 characters actually new.
+    # A chunk with less new content than one full overlap-window is
+    # more duplicate than substance, so fold it into the previous chunk
+    # instead of keeping it as its own (mostly redundant) entry. The
+    # merge itself stays overlap-free: merged_tail[overlap:] skips
+    # exactly the characters already present at the end of chunks[-1].
+    if overlap > 0 and len(chunks) > 1 and len(chunks[-1]) < 2 * overlap:
+        merged_tail = chunks.pop()
+        chunks[-1] = chunks[-1] + merged_tail[overlap:]
+
     return chunks
 
 

@@ -35,12 +35,22 @@ from sentence_transformers import SentenceTransformer
 from dataset import CASES
 from run_retrieval_eval import run_case
 
-# The one place to set the acceptable floor. Raise it once retrieval
-# quality genuinely improves (e.g. after fixing the chunking gap Stage 4
-# found, where the appraisal letter's revised-CTC chunk missed top-3).
-# Lower it only for a real, understood reason -- never just to silence
-# a failure.
-MIN_HIT_RATE = 0.90
+# Ratcheted to 1.0 after fixing the HR first-person bypass and the
+# chunker tail-merge bug (see evals/FINDINGS.md) -- re-measured hit@k
+# across all applicable regular cases is genuinely 100% now, so a floor
+# below that would tolerate a regression rather than catch one. Lower
+# it only for a real, understood reason -- never just to silence a
+# failure.
+#
+# IMPORTANT LIMITATION: this floor does NOT cover the still-open
+# appraisal-letter chunking gap (the revised-CTC chunk misses top-3).
+# hit@k is file-level -- "did 04_appraisal_letter_sample.md show up
+# ANYWHERE" -- and it does (via the header chunk), so hit@k reads True
+# for hr_full_appraisal_lookup even though the specific chunk with the
+# actual number is missing. Only Stage 4's expected_answer_contains
+# check catches that, and Stage 4 (LLM calls) isn't part of this pytest
+# gate. Don't read "1.0 hit@k, gate passes" as "no known gaps remain."
+MIN_HIT_RATE = 1.0
 
 
 @pytest.fixture(scope="session")
@@ -62,12 +72,19 @@ def regular_results(all_results):
 
 
 def test_no_leaks_in_regular_cases(regular_results):
+    """
+    Zero tolerance regardless of leak_type -- access_violation and
+    wrong_subject are different severities/layers (see dataset.py), but
+    both are correctness bugs, so both fail the build the same way here.
+    The type is included in the assertion message purely so a failure is
+    faster to triage, not because one type is allowed to pass.
+    """
     leaking = [
-        (r["case"]["id"], r["metrics"]["leaked_sources"])
+        (r["case"]["id"], r["case"]["leak_type"], r["metrics"]["leaked_sources"])
         for r in regular_results
         if r["metrics"]["leak_count"] > 0
     ]
-    assert not leaking, f"Leak(s) detected in non-known-limitation cases: {leaking}"
+    assert not leaking, f"Leak(s) detected in non-known-limitation cases (id, leak_type, sources): {leaking}"
 
 
 def test_hit_rate_meets_floor(regular_results):

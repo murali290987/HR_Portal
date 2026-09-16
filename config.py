@@ -46,8 +46,8 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 # tokens).
 TOP_K = 3
 
-# --- Relevance guardrail (see query.py's apply_relevance_guardrail) ------
-# We initially tried a blanket embedding-distance cutoff here to reject
+# --- A blanket distance cutoff was tried here and abandoned -------------
+# We initially tried a blanket embedding-distance cutoff to reject
 # "no good match" retrievals before they reach the LLM. It had to be
 # abandoned: with a corpus this small and a lightweight embedding model,
 # genuinely relevant and genuinely irrelevant matches land in
@@ -55,7 +55,17 @@ TOP_K = 3
 # CTC?" scored a WORSE (higher) distance than a genuinely irrelevant
 # match for an unrelated question. No single cutoff can separate them
 # without either missing real bugs or blocking real answers. See
-# query.py for the more targeted check that replaced it.
+# evals/FINDINGS.md and query.py for the more targeted checks that
+# replaced it.
+
+# --- Employee-identity pattern (see query.py's apply_relevance_guardrail
+# and retrieve()'s hr-role subject check) --------------------------------
+# Matches an explicit employee id like "EMP10453" in a question. Used
+# in two places: the relevance guardrail (drops a personal chunk whose
+# owner isn't one of the ids named in the question) and the hr role's
+# ownership bypass (only admits a personal chunk when the question
+# names its specific owner, by id or -- via EMPLOYEE_NAMES below -- by
+# name; a vague "my ..." question names neither).
 EMPLOYEE_ID_PATTERN = r"\bEMP\d+\b"
 
 # --- Generation ------------------------------------------------------------
@@ -107,4 +117,12 @@ CURRENT_USER_ID = "EMP10453"
 PERSONAL_DOCS = {
     "03_offer_letter_sample.md": "EMP10453",
     "04_appraisal_letter_sample.md": "EMP10453",
+}
+
+# Employee names, keyed by employee_id -- used by retrieve()'s hr-role
+# subject check (see query.py: the hr role's ownership bypass only
+# applies to a personal chunk when the query actually names its owner,
+# by id or by name; a vague "my ..." question names no one).
+EMPLOYEE_NAMES = {
+    "EMP10453": "Priya Ramanathan",
 }
