@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+# Built artifacts from ingest.py — regenerate with `python ingest.py`
+faiss_index.bin
+chunks_metadata.json
