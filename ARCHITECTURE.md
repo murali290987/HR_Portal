@@ -8,6 +8,53 @@ often confused with each other but do genuinely different jobs here,
 and the eval harness (`evals/`) that measures all of the above against
 a golden dataset instead of trusting eyeballed examples.
 
+## Query-time flow
+
+Everything below happens inside `query.retrieve()`, in this exact
+order — access control is resolved chunk-by-chunk *before* the top-`k`
+cutoff is applied, and the relevance guardrail runs on the survivors
+*after* it, which is why the diagram has two separate filtering stages
+rather than one:
+
+```mermaid
+flowchart TD
+    Q["User query + user_id<br/>(query.py CLI or POST /api/query)"]
+    EMB["Embed query<br/>(all-MiniLM-L6-v2 — same model as ingestion)"]
+    FAISS["FAISS: rank ALL chunks by L2 distance<br/>(IndexFlatL2, query.retrieve)"]
+    PERSONAL{"chunk.doc_type == personal?"}
+    OWNER{"chunk.employee_id == user_id<br/>OR role == hr?"}
+    DROP_AC["Drop chunk<br/>(access control)"]
+    KEEP1["Chunk survives"]
+    TOPK["Stop once TOP_K chunks<br/>have survived"]
+    NAMED{"Chunk is personal AND question names<br/>a different EMP id than this chunk's owner?"}
+    DROP_GR["Drop chunk<br/>(relevance guardrail)"]
+    KEEP2["Chunk survives"]
+    ANY{"Any chunks survived?"}
+    FIXED["Fixed 'no relevant info' message<br/>NO LLM call — deterministic"]
+    PROMPT["build_prompt(): paste surviving<br/>chunks as context"]
+    LLM["generate_answer():<br/>call Claude or Ollama"]
+    ANSWER["Grounded answer"]
+
+    Q --> EMB --> FAISS --> PERSONAL
+    PERSONAL -->|no, general| KEEP1
+    PERSONAL -->|yes, personal| OWNER
+    OWNER -->|yes| KEEP1
+    OWNER -->|no| DROP_AC
+    KEEP1 --> TOPK
+    TOPK --> NAMED
+    NAMED -->|yes| DROP_GR
+    NAMED -->|no| KEEP2
+    DROP_GR --> ANY
+    KEEP2 --> ANY
+    ANY -->|no| FIXED
+    ANY -->|yes| PROMPT --> LLM --> ANSWER
+```
+
+Note what the guardrail diamond does *not* cover: a bare pronoun like
+"my" with no named identity at all never makes the `NAMED` check fire —
+that's precisely the `known_limitation_hr_first_person_bypass` gap in
+§7/§8, not a missing box in this diagram.
+
 ## 1. Chunking — where and how
 
 **Where:** `ingest.py`, `chunk_text()` (line 35) and `build_chunks()`
