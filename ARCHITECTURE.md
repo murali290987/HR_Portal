@@ -10,15 +10,18 @@ a golden dataset instead of trusting eyeballed examples.
 
 ## Query-time flow
 
-Everything below happens inside `query.retrieve()`, in this exact
-order — access control is resolved chunk-by-chunk *before* the top-`k`
-cutoff is applied, and the relevance guardrail runs on the survivors
-*after* it, which is why the diagram has two separate filtering stages
-rather than one:
+Before any of this, the very first check is a plain string match — see
+§9 below. Everything from `EMB` onward happens inside
+`query.retrieve()`, in this exact order — access control is resolved
+chunk-by-chunk *before* the top-`k` cutoff is applied, and the
+relevance guardrail runs on the survivors *after* it, which is why the
+diagram has two separate filtering stages rather than one:
 
 ```mermaid
 flowchart TD
     Q["User query + user_id<br/>(query.py CLI or POST /api/query)"]
+    GREETING{"GREETING CHECK:<br/>is_pure_greeting()?<br/>(whole message, not substring)"}
+    GREET_ANSWER["Fixed self-introduction<br/>NO retrieval, NO LLM call"]
     EMB["Embed query<br/>(all-MiniLM-L6-v2 — same model as ingestion)"]
     FAISS["FAISS: rank ALL chunks by L2 distance<br/>(IndexFlatL2, query.retrieve)"]
     PERSONAL{"chunk.doc_type == personal?"}
@@ -38,7 +41,10 @@ flowchart TD
     LLM["generate_answer():<br/>call Claude or Ollama"]
     ANSWER["Grounded answer"]
 
-    Q --> EMB --> FAISS --> PERSONAL
+    Q --> GREETING
+    GREETING -->|yes| GREET_ANSWER
+    GREETING -->|no| EMB
+    EMB --> FAISS --> PERSONAL
     PERSONAL -->|no, general| KEEP1
     PERSONAL -->|yes, personal| OWNS
     OWNS -->|yes, genuinely theirs| KEEP1
@@ -168,13 +174,13 @@ have been returned instead.
 
 ## 5. Where the LLM is actually called
 
-**Where:** `query.py` — `call_anthropic()` (line 204), `call_ollama()`
-(line 228), and the dispatcher `generate_answer()` (line 240) that
+**Where:** `query.py` — `call_anthropic()` (line 238), `call_ollama()`
+(line 262), and the dispatcher `generate_answer()` (line 274) that
 picks between them based on `config.LLM_PROVIDER` (or a per-request
 override from `server.py`).
 
 **Call sites:**
-- CLI: `query.py`'s `main()` (line 257).
+- CLI: `query.py`'s `main()` (line 291).
 - Web UI: `server.py`'s `run_query()` (line 99), the `POST /api/query`
   handler.
 
@@ -185,7 +191,7 @@ already passed both the access-control filter and the relevance
 guardrail — it never receives, and therefore can never leak, a chunk
 that was filtered out upstream.
 
-`build_prompt()` (`query.py`, line 172) is what makes the generation
+`build_prompt()` (`query.py`, line 206) is what makes the generation
 *retrieval-augmented* rather than the model just answering from its own
 training: it pastes the surviving chunk text into the prompt and
 explicitly instructs the model to answer only from that context and say
@@ -254,7 +260,7 @@ chunk*; the guardrail decides *whether a chunk the requester is
 otherwise allowed to see is actually relevant to what they asked*. A
 chunk can pass authorization and still be the wrong answer.
 
-**Where:** `query.py`, `apply_relevance_guardrail()` (line 134), called
+**Where:** `query.py`, `apply_relevance_guardrail()` (line 168), called
 from both `main()` and `server.py`'s `run_query()` right after
 `retrieve()` and before `build_prompt()`/`generate_answer()`.
 
@@ -345,13 +351,61 @@ there's no separate "eval version" of the logic to drift out of sync.
 - Leaks are now split by severity (`leak_type`: `access_violation` vs.
   `wrong_subject`) rather than one flat count — see `evals/FINDINGS.md`.
 
+## 9. Greeting short-circuit — where and how
+
+**Where:** `query.py` — `GREETING_RESPONSE` (line 131),
+`_GREETING_PHRASES` (line 143), `is_pure_greeting()` (line 149).
+Called from both entry points *before* `retrieve()` ever runs: the
+CLI's `main()` and `server.py`'s `run_query()` (line 112) — this is a
+gate on top of the whole query-time flow in the diagram above, not a
+step inside it.
+
+**Why it exists:** a bare `"hi"` typed into the chat UI used to go
+through the entire pipeline anyway — embedded, searched against FAISS,
+handed whatever chunks happened to be least-far-away as "context," and
+the LLM was left to improvise a reply to an input that isn't a
+question at all. The result was a confusing, technical-sounding
+non-answer: *"There's no question provided."* Nothing about retrieval
+or access control was wrong here — every layer in §1–§7 did exactly
+what it was supposed to on a nonsensical input. The gap was that
+nothing in the pipeline had a concept of *"this message isn't asking
+about anything."*
+
+**How it works:** `is_pure_greeting()` normalizes the query (strip
+whitespace, lowercase, strip trailing `!`/`.`/`?`) and checks it
+against `_GREETING_PHRASES` — a small fixed set (`"hi"`, `"hello"`,
+`"hey"`, `"good morning"`, ...) — as an **exact match on the entire
+message, never a substring match**. This precision is deliberate and
+tested: `"hi, how many casual leaves do I get?"` does **not** match —
+it's a real question that happens to start with a greeting, and it
+correctly still retrieves 3 chunks and answers normally. A bare
+`"hi"`, `"hello"`, or `"Hello!"` (punctuation-insensitive) matches and
+retrieves **zero** chunks.
+
+**What happens on a match:** both call sites return
+`GREETING_RESPONSE` — a fixed self-introduction naming what the
+assistant can help with — immediately. No embedding, no FAISS search,
+no LLM call at all happens for a greeting. This follows the exact same
+principle as `NO_RELEVANT_CONTEXT_MESSAGE` in §7: a fixed, pre-written
+response beats hoping an LLM improvises well on an edge case every
+single time, and it's also strictly cheaper (skips retrieval, which
+`NO_RELEVANT_CONTEXT_MESSAGE`'s path does not — that one still runs
+retrieval and the guardrail first, only skipping the LLM call).
+
+**Not yet covered by the eval harness (§8):** every case in
+`evals/dataset.py` is built around retrieval/access-control scenarios;
+none currently exercises `is_pure_greeting()` itself. A regression here
+(e.g. an edit that turns the whole-message check into a substring
+check, which would wrongly swallow real questions containing a
+greeting) would not be caught automatically today.
+
 ## Summary: three layers, three different questions
 
 | Layer | Question it answers | Implemented? | Covered by `evals/`? |
 |---|---|---|---|
 | Authentication | Is this really who they claim to be? | No — simulated only | N/A — nothing to measure |
 | Authorization (ownership + RBAC) | Is this identity allowed to see this chunk? | Yes | Yes — leak count, every run |
-| Relevance guardrail | Is this chunk actually about what was asked? | Yes (narrow, targeted) | Yes — `expect_guardrail` + 2 tracked `known_limitation` cases |
+| Relevance guardrail | Is this chunk actually about what was asked? | Yes (narrow, targeted) | Yes — `expect_guardrail` + 1 tracked `known_limitation` case |
 
 All three are independent — a chunk can pass one and fail another (as
 the original bug demonstrated: authorization said yes, relevance should
