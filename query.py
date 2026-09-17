@@ -128,6 +128,40 @@ NO_RELEVANT_CONTEXT_MESSAGE = (
     "I don't have relevant information in the available documents to answer that question."
 )
 
+GREETING_RESPONSE = (
+    "Hello! I'm your HR assistant. I can help with questions about leave "
+    "policy, WFH/hybrid work, travel & expense reimbursement, company "
+    "norms, and the exit process -- as well as your own personal HR "
+    "documents, if you have any on file. What would you like to know?"
+)
+
+# A small, deliberately narrow set: matched only against the ENTIRE
+# (stripped, lowercased) query, never as a substring. "hi" matches;
+# "hi, how many casual leaves do I get?" does not -- that's a real
+# question that happens to start with a greeting, and should still go
+# through retrieval + generation like any other question.
+_GREETING_PHRASES = {
+    "hi", "hello", "hey", "hii", "hiya", "yo",
+    "good morning", "good afternoon", "good evening", "greetings",
+}
+
+
+def is_pure_greeting(query_text: str) -> bool:
+    """
+    Deterministic check for "this message is just a greeting, not an
+    actual question" -- e.g. a bare "hi" typed into the chat UI. Handled
+    here rather than left to the LLM's own judgment: asking an LLM to
+    improvise a reply to a near-empty prompt with irrelevant retrieved
+    context produces exactly the kind of confusing, technical-sounding
+    non-answer this was built to avoid ("There's no question provided").
+    A fixed, friendly response is faster (skips retrieval AND
+    generation entirely) and more reliable than hoping the model
+    phrases it well every time.
+    """
+    normalized = query_text.strip().lower().rstrip("!.? ")
+    return normalized in _GREETING_PHRASES
+
+
 _EMPLOYEE_ID_RE = re.compile(config.EMPLOYEE_ID_PATTERN, re.IGNORECASE)
 
 
@@ -261,6 +295,12 @@ def main():
 
     query = " ".join(sys.argv[1:])
     print(f"Query: {query}")
+
+    if is_pure_greeting(query):
+        print("\n--- Answer ---")
+        print(GREETING_RESPONSE)
+        return
+
     # Step 5 (naive access control, RBAC-extended): stands in for
     # "whoever is logged in right now." Change CURRENT_USER_ID in
     # config.py (or add a new entry to USERS) and re-run to see personal

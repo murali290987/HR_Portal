@@ -109,6 +109,17 @@ def run_query(request: QueryRequest):
         raise HTTPException(status_code=400, detail=f"Unknown user_id: {request.user_id!r}")
     role = user_info["role"]
 
+    if query.is_pure_greeting(request.query):
+        return QueryResponse(
+            query=request.query,
+            user_id=request.user_id,
+            role=role,
+            provider=request.provider,
+            retrieved_chunks=[],
+            guardrail_triggered=False,
+            answer=query.GREETING_RESPONSE,
+        )
+
     retrieved = query.retrieve(
         request.query, _model, _index, _metadata, config.TOP_K, request.user_id, role
     )
